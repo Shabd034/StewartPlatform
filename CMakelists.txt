@@ -1,0 +1,38 @@
+cmake_minimum_required(VERSION 3.10)
+project(stlRenderer)
+
+set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_OSX_ARCHITECTURES "arm64")
+add_definitions(-DGL_SILENCE_DEPRECATION)
+
+find_package(OpenGL REQUIRED)
+find_package(glfw3 REQUIRED)
+
+# Include GLM
+find_path(GLM_INCLUDE_DIR glm/glm.hpp)
+include_directories(${GLM_INCLUDE_DIR} include)
+
+# Paths to the shaders
+set(VERTEX_SHADER "${CMAKE_CURRENT_SOURCE_DIR}/src/vertex_shader.glsl")
+set(FRAGMENT_SHADER "${CMAKE_CURRENT_SOURCE_DIR}/src/fragment_shader.glsl")
+
+# Destination directory for the shaders
+set(DESTINATION_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+
+# Copy the shader files to the build directory
+add_custom_target(copy_shaders ALL
+    COMMAND ${CMAKE_COMMAND} -E copy ${VERTEX_SHADER} ${DESTINATION_DIRECTORY}
+    COMMAND ${CMAKE_COMMAND} -E copy ${FRAGMENT_SHADER} ${DESTINATION_DIRECTORY}
+    COMMENT "Copying shader files to the build directory"
+)
+
+include_directories(${OPENGL_INCLUDE_DIR} ${GLFW_INCLUDE_DIR} include)
+
+file(GLOB SOURCES "src/*.cpp" "src/*.c")
+
+add_executable(stewartSim ${SOURCES})
+
+# Make sure the shaders are copied before running the executable
+add_dependencies(stewartSim copy_shaders)
+
+target_link_libraries(stewartSim ${OPENGL_LIBRARIES} glfw)
