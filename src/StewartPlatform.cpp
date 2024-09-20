@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <mutex>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -18,8 +19,9 @@ Shader* pShaderProgram = nullptr;
 GLFWwindow* gWindow = nullptr;
 GLuint legVAO, legVBO;
 GLuint plateVAO, plateVBO;
+std::mutex targetLegEndsMutex;
 
-const float speedActuators = 5;
+const float speedActuators = 4;
 const float maxLegLength = 1.4;
 const float minLegLength = 0.6;
  
@@ -31,6 +33,10 @@ const float gBaseRadius = 0.6f;
 const float initHeight = 0.8;
 
 bool onTarget = true;
+bool firstTimeChange = true;
+
+// leg speeds
+float legSpeeds[NUM_LEGS] = {4, 4, 4, 4, 4, 4};
 
 const glm::vec3 legStarts[NUM_LEGS] = 
 {
@@ -113,10 +119,42 @@ StewartPlatform::StewartPlatform()
     }
 }
 
-void StewartPlatform::SetPlatformPosition(glm::vec3 normal, glm::vec3 position)
+void StewartPlatform::SetPlatformPosition(glm::vec3 position)
 {
-    UpdateTargetLegEnds(normal, position);
+    targetLegEndsMutex.lock();
+    glm::vec3 vec_one = targetLegEnds[1] - targetLegEnds[0];
+    glm::vec3 vec_two = targetLegEnds[2] - targetLegEnds[0];
+    targetLegEndsMutex.unlock();
+
+    glm::vec3 currNormal = glm::normalize(glm::cross(vec_one, vec_two));
+
+    UpdateTargetLegEnds(currNormal, position);
     onTarget = false;
+    firstTimeChange = true;
+}
+
+void StewartPlatform::SetPlatformNormal(glm::vec3 normal)
+{
+    if (normal == glm::vec3(0.0f)) 
+    {
+        return;
+    }
+
+    if (normal.y <= 0.0f) 
+    {
+        return;
+    }
+
+    glm::vec3 currTargetCentroid(0.0f);
+    for (int i = 0; i < 6; ++i) 
+    {
+        currTargetCentroid += targetLegEnds[i];
+    }
+    currTargetCentroid /= 6.0f;
+
+    UpdateTargetLegEnds(normal, currTargetCentroid);
+    onTarget = false;
+    firstTimeChange = true;
 }
 
 void StewartPlatform::SetupBuffers() 
@@ -190,7 +228,55 @@ void StewartPlatform::DrawLeg(const glm::vec3& start, const glm::vec3& end)
 
 void StewartPlatform::UpdateTargetLegEnds(glm::vec3 normal, glm::vec3 position)
 {
+    glm::vec4 plane = CalculatePlane();
+    glm::vec3 planeNormal = glm::vec3(plane.x, plane.y, plane.z);
+    glm::vec3 rotationAxis = glm::cross(planeNormal, normal);
 
+    glm::vec3 Q = glm::vec3(0.0f);
+    for (int i = 0; i < 6; ++i) 
+    {
+        Q += legEnds[i];
+    }
+
+    Q /= NUM_LEGS;
+
+    glm::vec3 translation = position - Q;
+    glm::mat4 translationMatrix = glm::translate(glm::mat4(1.0f), translation);
+
+    float angle = CalculateRotationAngle(planeNormal, normal);
+
+    glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), angle, rotationAxis);
+    glm::mat4 transformationMatrix;
+
+    if (glm::length(rotationAxis) < 1e-6f) 
+    {
+        if (glm::dot(planeNormal, normal) > 0.0f) 
+        {
+            transformationMatrix = translationMatrix;
+        } 
+        else 
+        {
+            rotationAxis = glm::vec3(1.0f, 0.0f, 0.0f);
+            angle = glm::pi<float>();
+            transformationMatrix = rotationMatrix * translationMatrix;
+        }
+    } 
+    else 
+    {
+        rotationAxis = glm::normalize(rotationAxis);
+        transformationMatrix = rotationMatrix * translationMatrix;
+    }
+
+    targetLegEndsMutex.lock();
+    for (int i = 0; i < NUM_LEGS; i++) 
+    {
+        glm::vec3 leg = legEnds[i];
+        glm::vec3 diff = leg - Q;
+        glm::vec3 rotatedLeg = glm::vec3(transformationMatrix * glm::vec4(diff, 1.0f));
+        glm::vec3 newLeg = rotatedLeg + position;
+        targetLegEnds[i] = newLeg;
+    }
+    targetLegEndsMutex.unlock();
 }
 
 // Function to calculate the plane from 6 points
@@ -226,33 +312,49 @@ glm::mat4 StewartPlatform::FindRotationAndTranslationToPlane()
     glm::vec3 planeNormal = glm::vec3(plane.x, plane.y, plane.z);
     glm::vec3 rotationAxis = glm::cross(initialNormal, planeNormal);
 
-    glm::vec3 Q = glm::vec3(0.0f, initHeight, 0.0f); // Replace with your reference point
-    float d = glm::dot(planeNormal, Q) + plane.w;
+    glm::vec3 Q = glm::vec3(0.0f, initHeight, 0.0f);
+    glm::vec3 targetCentroid(0.0f);
+    for (int i = 0; i < 6; ++i)
+    {
+        targetCentroid += legEnds[i];
+    }
+    targetCentroid /= 6.0f;
 
-    glm::vec3 translation = -(d * planeNormal);
-    glm::mat4 translationMatrix = glm::translate(glm::mat4(1.0f), translation);
+    glm::vec3 translation = targetCentroid - Q;
 
+    // Calculate the rotation angle from initial normal to plane normal
     float angle = CalculateRotationAngle(initialNormal, planeNormal);
 
+    glm::mat4 translationToOriginMatrix = glm::translate(glm::mat4(1.0f), -targetCentroid);
+    glm::mat4 translationBackMatrix = glm::translate(glm::mat4(1.0f),targetCentroid);
+
+    glm::mat4 rotationMatrix;
     if (glm::length(rotationAxis) < 1e-6f) 
     {
         if (glm::dot(initialNormal, planeNormal) > 0.0f) 
         {
-            return translationMatrix;
+            rotationMatrix = glm::mat4(1.0f);
         } 
         else 
         {
             rotationAxis = glm::vec3(1.0f, 0.0f, 0.0f);
             angle = glm::pi<float>();
+            rotationMatrix = glm::rotate(glm::mat4(1.0f), angle, rotationAxis);
         }
     } 
     else 
     {
         rotationAxis = glm::normalize(rotationAxis);
+        rotationMatrix = glm::rotate(glm::mat4(1.0f), angle, rotationAxis);
     }
 
-    glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), angle, rotationAxis);
-    return rotationMatrix * translationMatrix;
+    // Translate object to origin, rotate and translate back
+    // Apply the actual translation to the plane
+    glm::mat4 actualTranslationMatrix = glm::translate(glm::mat4(1.0f), translation);
+
+    glm::mat4 transformationMatrix = translationBackMatrix * rotationMatrix * translationToOriginMatrix * actualTranslationMatrix;
+
+    return transformationMatrix;
 }
 
 void StewartPlatform::DrawPlate()
@@ -269,13 +371,48 @@ void StewartPlatform::DrawPlate()
 
 void StewartPlatform::UpdateLegEnds()
 {
-    if (!onTarget)
+    if (firstTimeChange)
     {
-        float change = speedActuators / 1000;
+        int maxChangeindex = -1;
+        float legDistanceChanges[NUM_LEGS];
+        targetLegEndsMutex.lock();
         for (int i = 0; i < NUM_LEGS; i++) 
         {
             glm::vec3 diff = targetLegEnds[i] - legEnds[i];
             float length = glm::length(diff);
+            legDistanceChanges[i] = length;
+        }
+        targetLegEndsMutex.unlock();
+
+        float maxDistanceLength = -1.0f;
+        for (int i = 0; i < NUM_LEGS; i++) 
+        {
+            if (legDistanceChanges[i] > maxDistanceLength) 
+            {
+                maxDistanceLength = legDistanceChanges[i];
+                maxChangeindex = i;
+            }
+        }
+
+        float time = maxDistanceLength / speedActuators;
+        for (int i = 0; i < NUM_LEGS; i++) 
+        {
+            legSpeeds[i] = legDistanceChanges[i] / time;
+        }
+
+        firstTimeChange = false;
+    }
+
+    if (!onTarget)
+    {
+        glm::vec3 legEndsNewTarget[NUM_LEGS];
+
+        targetLegEndsMutex.lock();
+        for (int i = 0; i < NUM_LEGS; i++) 
+        {
+            glm::vec3 diff = targetLegEnds[i] - legEnds[i];
+            float length = glm::length(diff);
+            float change = legSpeeds[i] * 0.001f;
 
             if (length < change) 
             {
@@ -285,11 +422,14 @@ void StewartPlatform::UpdateLegEnds()
             {
                 legEnds[i] += change * glm::normalize(diff);
             }
+
+            legEndsNewTarget[i] = targetLegEnds[i];
         }
+        targetLegEndsMutex.unlock();
 
         for (int i = 0; i < NUM_LEGS; i++) 
         {
-            if (legEnds[i] != targetLegEnds[i]) 
+            if (legEnds[i] != legEndsNewTarget[i]) 
             {
                 return;
             }
@@ -379,11 +519,23 @@ void StewartPlatform::Start(int width, int height)
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
 
+    float expectedLength_one = glm::length(legEnds[0] - legEnds[1]);
+    float expectedLength_two = glm::length(legEnds[0] - legEnds[2]);
+    float expectedLength_three = glm::length(legEnds[0] - legEnds[3]);
+    float expectedLength_four = glm::length(legEnds[0] - legEnds[4]);
+    float expectedLength_five = glm::length(legEnds[0] - legEnds[5]);
+
     while (!glfwWindowShouldClose(gWindow)) 
     {
         ProcessInput();
         RenderScene();
         glfwPollEvents();
+
+        float currentLength_one = glm::length(legEnds[0] - legEnds[1]);
+        float currentLength_two = glm::length(legEnds[0] - legEnds[2]);
+        float currentLength_three = glm::length(legEnds[0] - legEnds[3]);
+        float currentLength_four = glm::length(legEnds[0] - legEnds[4]);
+        float currentLength_five = glm::length(legEnds[0] - legEnds[5]);
     }
 
     glDeleteVertexArrays(1, &legVAO);

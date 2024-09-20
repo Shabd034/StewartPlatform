@@ -9,7 +9,8 @@ class StewartPlatform
 public:
     StewartPlatform();
     void Start(int width, int height);
-    void SetPlatformPosition(glm::vec3 normal, glm::vec3 position);
+    void SetPlatformNormal(glm::vec3 normal);
+    void SetPlatformPosition(glm::vec3 position);
     bool PlatformOnTarget();
 
 private:
