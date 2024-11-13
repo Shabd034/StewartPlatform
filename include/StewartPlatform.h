@@ -10,8 +10,8 @@ public:
     StewartPlatform();
     void Start(int width, int height);
     void SetPlatformNormal(glm::vec3 normal);
-    void SetPlatformPosition(glm::vec3 position);
     bool PlatformOnTarget();
+    void GetBallPosition(glm::vec3& position);
 
 private:
     void SetupBuffers();
@@ -19,9 +19,10 @@ private:
     void ProcessInput();
     void DrawLeg(const glm::vec3& start, const glm::vec3& end);
     void DrawPlate();
+    void DrawBall();
     glm::vec4 CalculatePlane();
     float CalculateRotationAngle(const glm::vec3& u, const glm::vec3& v);
     glm::mat4 FindRotationAndTranslationToPlane();
-    void UpdateTargetLegEnds(glm::vec3 normal, glm::vec3 position);
+    void UpdateTargetLegEnds(glm::vec3 normal);
     void UpdateLegEnds();
 };

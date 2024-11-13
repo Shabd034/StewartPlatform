@@ -1,10 +1,13 @@
-#include <iostream>
-#include <vector>
+#include <chrono>
 #include <cmath>
-#include <mutex>
+#include <ctime>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <iostream>
+#include <mutex>
+#include <random>
+#include <vector>
 
 #include "Shader.h"
 #include "StewartPlatform.h"
@@ -19,24 +22,37 @@ Shader* pShaderProgram = nullptr;
 GLFWwindow* gWindow = nullptr;
 GLuint legVAO, legVBO;
 GLuint plateVAO, plateVBO;
+GLuint ballVAO, ballVBO;
 std::mutex targetLegEndsMutex;
+std::mutex ballMutex;
 
-const float speedActuators = 4;
-const float maxLegLength = 1.4;
-const float minLegLength = 0.6;
+const float speedActuators = 3;
  
 // Platform control
 const int NUM_LEGS = 6;
 int numSegments = 100;
 
+// scale
+const float baseDiameter = 0.5; // 30 cm
 const float gBaseRadius = 0.6f;
-const float initHeight = 0.8;
+const float initHeight = 1.4;
+
+const float worldToGl = (gBaseRadius * 2) / baseDiameter;
+
+//ball
+const int numLatitudeSegments = 50;
+const int numLongitudeSegments = 50;
+const float ballRadius = 0.075f;
+glm::vec3 ballPosition = glm::vec3(0.0f, initHeight + ballRadius, 0.0f);
+glm::vec3 ballVelocity = glm::vec3(0.0f, 0.0f, 0.0f);
+glm::vec3 ballAcc = glm::vec3(0.0f, 0.0f, 0.0f);
+auto lastTime = std::chrono::system_clock::now();
 
 bool onTarget = true;
 bool firstTimeChange = true;
 
 // leg speeds
-float legSpeeds[NUM_LEGS] = {4, 4, 4, 4, 4, 4};
+float legSpeeds[NUM_LEGS] = {speedActuators, speedActuators, speedActuators, speedActuators, speedActuators, speedActuators};
 
 const glm::vec3 legStarts[NUM_LEGS] = 
 {
@@ -49,6 +65,16 @@ const glm::vec3 legStarts[NUM_LEGS] =
 };
 
 glm::vec3 legEnds[NUM_LEGS] = 
+{
+    glm::vec3(gBaseRadius * cos((M_PI / 3) - M_PI / 18), initHeight, gBaseRadius * sin((M_PI / 3) - M_PI / 18)),
+    glm::vec3(gBaseRadius * cos(- (M_PI / 3) + M_PI / 18), initHeight, gBaseRadius * sin(- (M_PI / 3) + M_PI / 18)),
+    glm::vec3(gBaseRadius * cos(M_PI - M_PI / 18), initHeight, gBaseRadius * sin(M_PI - M_PI / 18)),
+    glm::vec3(gBaseRadius * cos((M_PI / 3) + M_PI / 18), initHeight, gBaseRadius * sin((M_PI / 3) + M_PI / 18)),
+    glm::vec3(gBaseRadius * cos((5 * M_PI / 3) - M_PI / 18), initHeight, gBaseRadius * sin((5 * M_PI / 3) - M_PI / 18)),
+    glm::vec3(gBaseRadius * cos(M_PI + M_PI / 18), initHeight, gBaseRadius * sin(M_PI + M_PI / 18))
+};
+
+glm::vec3 initialPositions[NUM_LEGS] = 
 {
     glm::vec3(gBaseRadius * cos((M_PI / 3) - M_PI / 18), initHeight, gBaseRadius * sin((M_PI / 3) - M_PI / 18)),
     glm::vec3(gBaseRadius * cos(- (M_PI / 3) + M_PI / 18), initHeight, gBaseRadius * sin(- (M_PI / 3) + M_PI / 18)),
@@ -119,20 +145,6 @@ StewartPlatform::StewartPlatform()
     }
 }
 
-void StewartPlatform::SetPlatformPosition(glm::vec3 position)
-{
-    targetLegEndsMutex.lock();
-    glm::vec3 vec_one = targetLegEnds[1] - targetLegEnds[0];
-    glm::vec3 vec_two = targetLegEnds[2] - targetLegEnds[0];
-    targetLegEndsMutex.unlock();
-
-    glm::vec3 currNormal = glm::normalize(glm::cross(vec_one, vec_two));
-
-    UpdateTargetLegEnds(currNormal, position);
-    onTarget = false;
-    firstTimeChange = true;
-}
-
 void StewartPlatform::SetPlatformNormal(glm::vec3 normal)
 {
     if (normal == glm::vec3(0.0f)) 
@@ -140,19 +152,12 @@ void StewartPlatform::SetPlatformNormal(glm::vec3 normal)
         return;
     }
 
-    if (normal.y <= 0.0f) 
+    if (normal.y <= 0.1f) 
     {
         return;
     }
 
-    glm::vec3 currTargetCentroid(0.0f);
-    for (int i = 0; i < 6; ++i) 
-    {
-        currTargetCentroid += targetLegEnds[i];
-    }
-    currTargetCentroid /= 6.0f;
-
-    UpdateTargetLegEnds(normal, currTargetCentroid);
+    UpdateTargetLegEnds(normal);
     onTarget = false;
     firstTimeChange = true;
 }
@@ -196,6 +201,38 @@ void StewartPlatform::SetupBuffers()
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
+    // ball
+    vertices.clear();
+
+    for (int lat = 0; lat <= numLatitudeSegments; ++lat)
+    {
+        float phi = M_PI * float(lat) / float(numLatitudeSegments);
+        float y = ballRadius * cos(phi);
+
+        for (int lon = 0; lon <= numLongitudeSegments; ++lon) 
+        {
+            float theta = 2.0f * M_PI * float(lon) / float(numLongitudeSegments);
+            float x = ballRadius * sin(phi) * cos(theta);
+            float z = ballRadius * sin(phi) * sin(theta);
+
+            vertices.push_back(x);
+            vertices.push_back(y);
+            vertices.push_back(z);
+        }
+    }
+
+    glGenVertexArrays(1, &ballVAO);
+    glGenBuffers(1, &ballVBO);
+
+    glBindVertexArray(ballVAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, ballVBO);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 }
@@ -226,8 +263,17 @@ void StewartPlatform::DrawLeg(const glm::vec3& start, const glm::vec3& end)
     glBindVertexArray(0);
 }
 
-void StewartPlatform::UpdateTargetLegEnds(glm::vec3 normal, glm::vec3 position)
+void StewartPlatform::UpdateTargetLegEnds(glm::vec3 normal)
 {
+    targetLegEndsMutex.lock();
+    glm::vec3 position(0.0f);
+    for (int i = 0; i < 6; ++i) 
+    {
+        position += targetLegEnds[i];
+    }
+    targetLegEndsMutex.unlock();
+    position /= 6.0f;
+
     glm::vec4 plane = CalculatePlane();
     glm::vec3 planeNormal = glm::vec3(plane.x, plane.y, plane.z);
     glm::vec3 rotationAxis = glm::cross(planeNormal, normal);
@@ -369,6 +415,16 @@ void StewartPlatform::DrawPlate()
     glBindVertexArray(0);
 }
 
+void StewartPlatform::DrawBall()
+{
+    glBindVertexArray(ballVAO);
+    glm::mat4 model = glm::translate(glm::mat4(1.0f), ballPosition);
+    pShaderProgram->setMat4("model", model);
+
+    glDrawArrays(GL_TRIANGLE_FAN, 0, (numLatitudeSegments) * (numLongitudeSegments));
+    glBindVertexArray(0);
+}
+
 void StewartPlatform::UpdateLegEnds()
 {
     if (firstTimeChange)
@@ -439,6 +495,13 @@ void StewartPlatform::UpdateLegEnds()
     }
 }
 
+void StewartPlatform::GetBallPosition(glm::vec3& position)
+{
+    ballMutex.lock();
+    position = ballPosition;
+    ballMutex.unlock();
+}
+
 void StewartPlatform::RenderScene() 
 {
     glClearColor(0, 0, 0, 1.0f);
@@ -456,6 +519,29 @@ void StewartPlatform::RenderScene()
     shaderProgram.setMat4("projection", projection);
     shaderProgram.setVec3("color", 1.0f, 0.5f, 0.2f);
 
+    //Update ball position
+    auto now = std::chrono::system_clock::now();
+    auto diff = now - lastTime;
+    float seconds = std::chrono::duration<float>(diff).count();
+
+    glm::vec3 distance = ballVelocity * (float)seconds + 0.5f * ballAcc * (seconds * seconds);
+    distance *= worldToGl;
+    ballMutex.lock();
+    ballPosition += distance;
+    ballMutex.unlock();
+    ballVelocity += ballAcc * (float)seconds;
+
+    glm::vec4 plane = CalculatePlane();
+    glm::vec3 normal = glm::vec3(plane.x, plane.y, plane.z);
+    
+    glm::vec3 gravity = glm::vec3(0.0f, -9.8f, 0.0f);
+    // normalize
+    glm::vec3 unitNormal = glm::normalize(normal);
+    glm::vec3 acc = glm::dot(gravity, unitNormal) * unitNormal;
+    ballAcc = gravity - acc;
+
+    lastTime = now;
+
     UpdateLegEnds();
     for (int i = 0; i < NUM_LEGS; i++) 
     {
@@ -465,7 +551,16 @@ void StewartPlatform::RenderScene()
 
     shaderProgram.setVec3("color", 0.0f, 0.2f, 0.7f);
     DrawPlate();
+
+    shaderProgram.setVec3("color", 1.0f, 0.5f, 0.2f);
+    DrawBall();
     glfwSwapBuffers(gWindow);
+
+    // TESTING
+    std::cout << "Ball position: " << ballPosition.x << " " << ballPosition.y << " " << ballPosition.z << std::endl;
+    std::cout << "Ball velocity: " << ballVelocity.x << " " << ballVelocity.y << " " << ballVelocity.z << std::endl;
+    std::cout << "Ball acceleration: " << ballAcc.x << " " << ballAcc.y << " " << ballAcc.z << std::endl;
+    std::cout << "time passed: " << seconds << std::endl;
 }
 
 
@@ -478,6 +573,20 @@ void StewartPlatform::ProcessInput()
     if (glfwGetKey(gWindow, GLFW_KEY_R) == GLFW_PRESS) 
     {
         gRotationMatrix = glm::mat4(1.0f);
+
+        ballMutex.lock();
+        ballPosition = glm::vec3(0.0f, initHeight + ballRadius, 0.0f);
+        ballMutex.unlock();
+        ballVelocity = glm::vec3(0.0f, 0.0f, 0.0f);
+        ballAcc = glm::vec3(0.0f, 0.0f, 0.0f);
+
+        targetLegEndsMutex.lock();
+        for (int i = 0; i < NUM_LEGS; i++) 
+        {
+            legEnds[i] = glm::vec3(initialPositions[i].x, initHeight, initialPositions[i].z);
+            targetLegEnds[i] = glm::vec3(initialPositions[i].x, initHeight, initialPositions[i].z);
+        }
+        targetLegEndsMutex.unlock();
     }
 }
 
@@ -519,29 +628,35 @@ void StewartPlatform::Start(int width, int height)
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
 
-    float expectedLength_one = glm::length(legEnds[0] - legEnds[1]);
-    float expectedLength_two = glm::length(legEnds[0] - legEnds[2]);
-    float expectedLength_three = glm::length(legEnds[0] - legEnds[3]);
-    float expectedLength_four = glm::length(legEnds[0] - legEnds[4]);
-    float expectedLength_five = glm::length(legEnds[0] - legEnds[5]);
+    lastTime = std::chrono::system_clock::now();
+
+    std::random_device rd;  // Seed the random number generator
+    std::mt19937 gen(rd()); // Mersenne Twister engine
+
+    // Define a distribution range (e.g., 0.0 to 1.5)
+    std::uniform_real_distribution<float> dist(0.0f, 0.0f);
+
+    // Generate a random float
+    float velX = dist(gen);
+    float velZ = dist(gen);
+
+    ballMutex.lock();
+    ballVelocity = glm::vec3(velX, 0.0f, velZ);
+    ballMutex.unlock();
 
     while (!glfwWindowShouldClose(gWindow)) 
     {
         ProcessInput();
         RenderScene();
         glfwPollEvents();
-
-        float currentLength_one = glm::length(legEnds[0] - legEnds[1]);
-        float currentLength_two = glm::length(legEnds[0] - legEnds[2]);
-        float currentLength_three = glm::length(legEnds[0] - legEnds[3]);
-        float currentLength_four = glm::length(legEnds[0] - legEnds[4]);
-        float currentLength_five = glm::length(legEnds[0] - legEnds[5]);
     }
 
     glDeleteVertexArrays(1, &legVAO);
     glDeleteBuffers(1, &legVBO);
     glDeleteVertexArrays(1, &plateVAO);
     glDeleteBuffers(1, &plateVBO);
+    glDeleteVertexArrays(1, &ballVAO);
+    glDeleteBuffers(1, &ballVBO);
     shaderProgram.Delete();
 
     const GLubyte* renderer = glGetString(GL_RENDERER); // Get renderer string

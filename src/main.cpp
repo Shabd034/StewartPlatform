@@ -6,12 +6,13 @@
 
 void changePoition(StewartPlatform& platform)
 {
-    platform.SetPlatformPosition(glm::vec3(0.0, 1.3, 0.0));
+    //platform.SetPlatformNormal(glm::vec3(0.0, 1.0, 0.4));
     while (!platform.PlatformOnTarget())
     {
         // wait
     }
-    platform.SetPlatformNormal(glm::vec3(0.0, 0.5, 0.5));
+
+    //platform.SetPlatformNormal(glm::vec3(0.0, 1.0, 0.0));
 }
 
 int main()
