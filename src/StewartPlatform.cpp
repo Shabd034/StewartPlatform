@@ -265,64 +265,54 @@ void StewartPlatform::DrawLeg(const glm::vec3& start, const glm::vec3& end)
 
 void StewartPlatform::UpdateTargetLegEnds(glm::vec3 normal)
 {
-    targetLegEndsMutex.lock();
-    glm::vec3 position(0.0f);
-    for (int i = 0; i < 6; ++i) 
-    {
-        position += targetLegEnds[i];
-    }
-    targetLegEndsMutex.unlock();
-    position /= 6.0f;
+    std::lock_guard<std::mutex> lock(targetLegEndsMutex);
 
+    // Compute centroid of current leg ends
+    glm::vec3 centroid(0.0f);
+    for (int i = 0; i < NUM_LEGS; ++i)
+        centroid += legEnds[i];
+    centroid /= static_cast<float>(NUM_LEGS);
+
+    // Compute current plane normal
     glm::vec4 plane = CalculatePlane();
     glm::vec3 planeNormal = glm::vec3(plane.x, plane.y, plane.z);
+
+    // Compute rotation axis and angle
     glm::vec3 rotationAxis = glm::cross(planeNormal, normal);
-
-    glm::vec3 Q = glm::vec3(0.0f);
-    for (int i = 0; i < 6; ++i) 
-    {
-        Q += legEnds[i];
-    }
-
-    Q /= NUM_LEGS;
-
-    glm::vec3 translation = position - Q;
-    glm::mat4 translationMatrix = glm::translate(glm::mat4(1.0f), translation);
-
     float angle = CalculateRotationAngle(planeNormal, normal);
 
-    glm::mat4 rotationMatrix = glm::rotate(glm::mat4(1.0f), angle, rotationAxis);
-    glm::mat4 transformationMatrix;
-
-    if (glm::length(rotationAxis) < 1e-6f) 
+    // Handle degenerate axis
+    if (glm::length(rotationAxis) < 1e-6f)
     {
-        if (glm::dot(planeNormal, normal) > 0.0f) 
+        if (glm::dot(planeNormal, normal) > 0.0f)
         {
-            transformationMatrix = translationMatrix;
-        } 
-        else 
+            rotationAxis = glm::vec3(1.0f, 0.0f, 0.0f);
+            angle = 0.0f;
+        }
+        else
         {
             rotationAxis = glm::vec3(1.0f, 0.0f, 0.0f);
             angle = glm::pi<float>();
-            transformationMatrix = rotationMatrix * translationMatrix;
         }
-    } 
-    else 
+    }
+    else
     {
         rotationAxis = glm::normalize(rotationAxis);
-        transformationMatrix = rotationMatrix * translationMatrix;
     }
 
-    targetLegEndsMutex.lock();
-    for (int i = 0; i < NUM_LEGS; i++) 
+    // Build transformation: move to origin, rotate, move back
+    glm::mat4 toOrigin = glm::translate(glm::mat4(1.0f), -centroid);
+    glm::mat4 rotate = glm::rotate(glm::mat4(1.0f), angle, rotationAxis);
+    glm::mat4 back = glm::translate(glm::mat4(1.0f), centroid);
+
+    glm::mat4 transform = back * rotate * toOrigin;
+
+    // Apply transformation to each leg end
+    for (int i = 0; i < NUM_LEGS; ++i)
     {
-        glm::vec3 leg = legEnds[i];
-        glm::vec3 diff = leg - Q;
-        glm::vec3 rotatedLeg = glm::vec3(transformationMatrix * glm::vec4(diff, 1.0f));
-        glm::vec3 newLeg = rotatedLeg + position;
-        targetLegEnds[i] = newLeg;
+        glm::vec4 leg = glm::vec4(legEnds[i], 1.0f);
+        targetLegEnds[i] = glm::vec3(transform * leg);
     }
-    targetLegEndsMutex.unlock();
 }
 
 // Function to calculate the plane from 6 points
@@ -485,7 +475,7 @@ void StewartPlatform::UpdateLegEnds()
 
         for (int i = 0; i < NUM_LEGS; i++) 
         {
-            if (legEnds[i] != legEndsNewTarget[i]) 
+            if (glm::distance(legEnds[i], legEndsNewTarget[i]) > 1e-5f) 
             {
                 return;
             }
@@ -537,8 +527,32 @@ void StewartPlatform::RenderScene()
     glm::vec3 gravity = glm::vec3(0.0f, -9.8f, 0.0f);
     // normalize
     glm::vec3 unitNormal = glm::normalize(normal);
-    glm::vec3 acc = glm::dot(gravity, unitNormal) * unitNormal;
-    ballAcc = gravity - acc;
+
+    float plateRadius = baseDiameter / 2.0f;
+    float ballHeightOnPlane = glm::dot(glm::vec3(ballPosition), unitNormal) + plane.w;
+    // Project ball position onto plate plane
+    glm::vec3 plateCenter = glm::vec3(0.0f, initHeight, 0.0f);
+    // Find closest point on plane to ball
+    glm::vec3 ballToPlane = ballPosition - unitNormal * ballHeightOnPlane;
+    float distFromCenter = glm::length(glm::vec2(ballToPlane.x - plateCenter.x, ballToPlane.z - plateCenter.z));
+
+    // Ground collision: prevent ball from going below y = 0 + ballRadius
+    if (ballPosition.y < ballRadius) 
+    {
+        ballPosition.y = ballRadius;
+        if (ballVelocity.y < 0.0f) ballVelocity.y = 0.0f;
+        if (ballAcc.y < 0.0f) ballAcc.y = 0.0f;
+    }
+
+    if (ballHeightOnPlane >= -ballRadius && distFromCenter <= plateRadius + 1e-5f)
+    {
+        glm::vec3 acc = glm::dot(gravity, unitNormal) * unitNormal;
+        ballAcc = gravity - acc;
+    }
+    else
+    {
+        ballAcc = gravity;
+    }
 
     lastTime = now;
 
@@ -576,17 +590,45 @@ void StewartPlatform::ProcessInput()
 
         ballMutex.lock();
         ballPosition = glm::vec3(0.0f, initHeight + ballRadius, 0.0f);
-        ballMutex.unlock();
         ballVelocity = glm::vec3(0.0f, 0.0f, 0.0f);
         ballAcc = glm::vec3(0.0f, 0.0f, 0.0f);
+        ballMutex.unlock();
 
         targetLegEndsMutex.lock();
         for (int i = 0; i < NUM_LEGS; i++) 
         {
-            legEnds[i] = glm::vec3(initialPositions[i].x, initHeight, initialPositions[i].z);
-            targetLegEnds[i] = glm::vec3(initialPositions[i].x, initHeight, initialPositions[i].z);
+            legEnds[i] = initialPositions[i];
+            targetLegEnds[i] = initialPositions[i];
         }
         targetLegEndsMutex.unlock();
+
+        onTarget = true;
+        firstTimeChange = true;
+    }
+
+    glm::vec3 direction(0.0f);
+
+    // Arrow keys: Up/Down/Left/Right to tilt the platform
+    if (glfwGetKey(gWindow, GLFW_KEY_UP) == GLFW_PRESS) {
+        direction.z -= 1.0f;
+    }
+    if (glfwGetKey(gWindow, GLFW_KEY_DOWN) == GLFW_PRESS) {
+        direction.z += 1.0f;
+    }
+    if (glfwGetKey(gWindow, GLFW_KEY_LEFT) == GLFW_PRESS) {
+        direction.x -= 1.0f;
+    }
+    if (glfwGetKey(gWindow, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+        direction.x += 1.0f;
+    }
+
+    // If any arrow key is pressed, set new platform normal relative to current orientation
+    if (glm::length(direction) > 0.0f) {
+        glm::vec4 plane = CalculatePlane();
+        glm::vec3 currentNormal = glm::normalize(glm::vec3(plane.x, plane.y, plane.z));
+        float tiltAmount = 0.05f; // Adjust tilt sensitivity
+        glm::vec3 newNormal = glm::normalize(currentNormal + tiltAmount * direction);
+        SetPlatformNormal(newNormal);
     }
 }
 
