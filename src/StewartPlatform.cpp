@@ -33,7 +33,7 @@ const int NUM_LEGS = 6;
 int numSegments = 100;
 
 // scale
-const float baseDiameter = 0.5; // 30 cm
+const float baseDiameter = 1.5;
 const float gBaseRadius = 0.6f;
 const float initHeight = 1.4;
 
@@ -178,7 +178,7 @@ void StewartPlatform::SetupBuffers()
     // Plate
     std::vector<float> vertices;
 
-    float radius = 0.75f;
+    float radius = baseDiameter / 2.0f; // 15 cm
     int numSegments = 100; // Define the number of segments for the circle
     for (int i = 0; i <= numSegments; ++i) 
     {
@@ -569,12 +569,6 @@ void StewartPlatform::RenderScene()
     shaderProgram.setVec3("color", 1.0f, 0.5f, 0.2f);
     DrawBall();
     glfwSwapBuffers(gWindow);
-
-    // TESTING
-    std::cout << "Ball position: " << ballPosition.x << " " << ballPosition.y << " " << ballPosition.z << std::endl;
-    std::cout << "Ball velocity: " << ballVelocity.x << " " << ballVelocity.y << " " << ballVelocity.z << std::endl;
-    std::cout << "Ball acceleration: " << ballAcc.x << " " << ballAcc.y << " " << ballAcc.z << std::endl;
-    std::cout << "time passed: " << seconds << std::endl;
 }
 
 
