@@ -556,10 +556,24 @@ void StewartPlatform::RenderScene()
 
     lastTime = now;
 
+    glm::vec4 oldPlane = CalculatePlane();
+    glm::vec3 oldNormal = glm::normalize(glm::vec3(oldPlane.x, oldPlane.y, oldPlane.z));
+    float oldBallHeightOnPlane = glm::dot(ballPosition, oldNormal) + oldPlane.w;
+    glm::vec3 ballOnOldPlane = ballPosition - oldNormal * oldBallHeightOnPlane;
+
     UpdateLegEnds();
+
+    glm::vec4 newPlane = CalculatePlane();
+    glm::vec3 newNormal = glm::normalize(glm::vec3(newPlane.x, newPlane.y, newPlane.z));
+
+    float newBallHeightOnPlane = glm::dot(ballOnOldPlane, newNormal) + newPlane.w;
+    glm::vec3 ballOnNewPlane = ballOnOldPlane - newNormal * newBallHeightOnPlane;
+
+    ballMutex.lock();
+    ballPosition = ballOnNewPlane + newNormal * ballRadius;
+    ballMutex.unlock();
     for (int i = 0; i < NUM_LEGS; i++) 
     {
-        // Render each leg with its specified start and end points
         DrawLeg(legStarts[i], legEnds[i]);
     }
 
