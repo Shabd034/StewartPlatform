@@ -26,7 +26,7 @@ GLuint ballVAO, ballVBO;
 std::mutex targetLegEndsMutex;
 std::mutex ballMutex;
 
-const float speedActuators = 3;
+const float speedActuators = 5;
  
 // Platform control
 const int NUM_LEGS = 6;
@@ -36,6 +36,8 @@ int numSegments = 100;
 const float baseDiameter = 1.5;
 const float gBaseRadius = 0.6f;
 const float initHeight = 1.4;
+
+const float frictionCoeff = 0.15f;
 
 const float worldToGl = (gBaseRadius * 2) / baseDiameter;
 
@@ -114,19 +116,24 @@ static void MouseButtonCallback(GLFWwindow* window, int button, int action, int 
 // Cursor position callback
 static void CursorPositionCallback(GLFWwindow* window, double xpos, double ypos) 
 {
-    static float lastX = xpos;
-    float xOffset = xpos - lastX;
+    static double lastX = xpos;
+    static double lastY = ypos;
+    double xOffset = xpos - lastX;
+    double yOffset = ypos - lastY;
     lastX = xpos;
+    lastY = ypos;
 
     // Sensitivity factor
     float sensitivity = 0.3f;
     xOffset *= sensitivity;
+    yOffset *= sensitivity;
 
     // Update rotation angles
     if (gIsDragging) 
     {
-        glm::mat4 rotY = glm::rotate(glm::mat4(1.0f), glm::radians(xOffset), glm::vec3(0.0f, 1.0f, 0.0f));
-        gRotationMatrix = rotY * gRotationMatrix;
+        glm::mat4 rotY = glm::rotate(glm::mat4(1.0f), glm::radians((float)xOffset), glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 rotX = glm::rotate(glm::mat4(1.0f), glm::radians((float)yOffset), glm::vec3(1.0f, 0.0f, 0.0f));
+        gRotationMatrix = rotY * rotX * gRotationMatrix;
     }
 }
 
@@ -409,6 +416,7 @@ void StewartPlatform::DrawBall()
 {
     glBindVertexArray(ballVAO);
     glm::mat4 model = glm::translate(glm::mat4(1.0f), ballPosition);
+    model = gRotationMatrix * model;
     pShaderProgram->setMat4("model", model);
 
     glDrawArrays(GL_TRIANGLE_FAN, 0, (numLatitudeSegments) * (numLongitudeSegments));
@@ -501,7 +509,7 @@ void StewartPlatform::RenderScene()
     glfwGetFramebufferSize(gWindow, &width, &height);
 
     Shader shaderProgram = *pShaderProgram;
-    glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 3.0f, 5.0f), glm::vec3(0.0f, 0.5f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 4.0f, 4.0f), glm::vec3(0.0f, 0.5f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)width / height, 0.1f, 100.0f);
 
     shaderProgram.Use();
@@ -514,19 +522,28 @@ void StewartPlatform::RenderScene()
     auto diff = now - lastTime;
     float seconds = std::chrono::duration<float>(diff).count();
 
-    glm::vec3 distance = ballVelocity * (float)seconds + 0.5f * ballAcc * (seconds * seconds);
-    distance *= worldToGl;
-    ballMutex.lock();
-    ballPosition += distance;
-    ballMutex.unlock();
-    ballVelocity += ballAcc * (float)seconds;
-
     glm::vec4 plane = CalculatePlane();
     glm::vec3 normal = glm::vec3(plane.x, plane.y, plane.z);
     
     glm::vec3 gravity = glm::vec3(0.0f, -9.8f, 0.0f);
     // normalize
     glm::vec3 unitNormal = glm::normalize(normal);
+
+    ballVelocity += ballAcc * (float)seconds;
+    glm::vec3 velocityOnPlane = ballVelocity - glm::dot(ballVelocity, unitNormal) * unitNormal;
+    if (glm::length(velocityOnPlane) > 1e-5f)
+    {
+        glm::vec3 frictionDir = -glm::normalize(velocityOnPlane);
+        glm::vec3 friction = frictionCoeff * gravity.y * frictionDir;
+        ballVelocity += friction * (float)seconds;
+    }
+    glm::vec3 distance = ballVelocity * (float)seconds + 0.5f * ballAcc * (seconds * seconds);
+    distance *= worldToGl;
+    ballMutex.lock();
+    ballPosition += distance;
+    ballMutex.unlock();
+
+    bool ballOnPlate = false;
 
     float plateRadius = baseDiameter / 2.0f;
     float ballHeightOnPlane = glm::dot(glm::vec3(ballPosition), unitNormal) + plane.w;
@@ -548,6 +565,7 @@ void StewartPlatform::RenderScene()
     {
         glm::vec3 acc = glm::dot(gravity, unitNormal) * unitNormal;
         ballAcc = gravity - acc;
+        ballOnPlate = true;
     }
     else
     {
@@ -563,15 +581,19 @@ void StewartPlatform::RenderScene()
 
     UpdateLegEnds();
 
-    glm::vec4 newPlane = CalculatePlane();
-    glm::vec3 newNormal = glm::normalize(glm::vec3(newPlane.x, newPlane.y, newPlane.z));
+    if (ballOnPlate)
+    {
+        glm::vec4 newPlane = CalculatePlane();
+        glm::vec3 newNormal = glm::normalize(glm::vec3(newPlane.x, newPlane.y, newPlane.z));
 
-    float newBallHeightOnPlane = glm::dot(ballOnOldPlane, newNormal) + newPlane.w;
-    glm::vec3 ballOnNewPlane = ballOnOldPlane - newNormal * newBallHeightOnPlane;
+        float newBallHeightOnPlane = glm::dot(ballOnOldPlane, newNormal) + newPlane.w;
+        glm::vec3 ballOnNewPlane = ballOnOldPlane - newNormal * newBallHeightOnPlane;
 
-    ballMutex.lock();
-    ballPosition = ballOnNewPlane + newNormal * ballRadius;
-    ballMutex.unlock();
+        ballMutex.lock();
+        ballPosition = ballOnNewPlane + newNormal * ballRadius;
+        ballMutex.unlock();
+    }
+
     for (int i = 0; i < NUM_LEGS; i++) 
     {
         DrawLeg(legStarts[i], legEnds[i]);
@@ -594,11 +616,15 @@ void StewartPlatform::ProcessInput()
     // Reset platform rotation
     if (glfwGetKey(gWindow, GLFW_KEY_R) == GLFW_PRESS) 
     {
-        gRotationMatrix = glm::mat4(1.0f);
-
         ballMutex.lock();
         ballPosition = glm::vec3(0.0f, initHeight + ballRadius, 0.0f);
-        ballVelocity = glm::vec3(0.0f, 0.0f, 0.0f);
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
+        float velX = dist(gen);
+        float velZ = dist(gen);
+        ballVelocity = glm::vec3(velX, 0.0f, velZ);
+
         ballAcc = glm::vec3(0.0f, 0.0f, 0.0f);
         ballMutex.unlock();
 
@@ -614,20 +640,25 @@ void StewartPlatform::ProcessInput()
         firstTimeChange = true;
     }
 
+    if (glfwGetKey(gWindow, GLFW_KEY_V) == GLFW_PRESS) 
+    {
+        gRotationMatrix = glm::mat4(1.0f);
+    }
+
     glm::vec3 direction(0.0f);
 
     // Arrow keys: Up/Down/Left/Right to tilt the platform
     if (glfwGetKey(gWindow, GLFW_KEY_UP) == GLFW_PRESS) {
-        direction.z -= 1.0f;
+        direction.z -= 1.5f;
     }
     if (glfwGetKey(gWindow, GLFW_KEY_DOWN) == GLFW_PRESS) {
-        direction.z += 1.0f;
+        direction.z += 1.5f;
     }
     if (glfwGetKey(gWindow, GLFW_KEY_LEFT) == GLFW_PRESS) {
-        direction.x -= 1.0f;
+        direction.x -= 1.5f;
     }
     if (glfwGetKey(gWindow, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-        direction.x += 1.0f;
+        direction.x += 1.5f;
     }
 
     // If any arrow key is pressed, set new platform normal relative to current orientation
@@ -683,8 +714,7 @@ void StewartPlatform::Start(int width, int height)
     std::random_device rd;  // Seed the random number generator
     std::mt19937 gen(rd()); // Mersenne Twister engine
 
-    // Define a distribution range (e.g., 0.0 to 1.5)
-    std::uniform_real_distribution<float> dist(0.0f, 0.0f);
+    std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
 
     // Generate a random float
     float velX = dist(gen);
