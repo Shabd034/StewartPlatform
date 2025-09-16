@@ -37,7 +37,7 @@ const float baseDiameter = 1.5;
 const float gBaseRadius = 0.6f;
 const float initHeight = 1.4;
 
-const float frictionCoeff = 0.15f;
+const float frictionCoeff = 0.05f;
 
 const float worldToGl = (gBaseRadius * 2) / baseDiameter;
 
@@ -533,7 +533,7 @@ void StewartPlatform::RenderScene()
     glm::vec3 velocityOnPlane = ballVelocity - glm::dot(ballVelocity, unitNormal) * unitNormal;
     if (glm::length(velocityOnPlane) > 1e-5f)
     {
-        glm::vec3 frictionDir = -glm::normalize(velocityOnPlane);
+        glm::vec3 frictionDir = glm::normalize(velocityOnPlane);
         glm::vec3 friction = frictionCoeff * gravity.y * frictionDir;
         ballVelocity += friction * (float)seconds;
     }
@@ -571,6 +571,10 @@ void StewartPlatform::RenderScene()
     {
         ballAcc = gravity;
     }
+    
+    std::cout << "Ball position: (" << ballPosition.x << ", " << ballPosition.y << ", " << ballPosition.z << ")\n";
+    std::cout << "Ball velocity: (" << ballVelocity.x << ", " << ballVelocity.y << ", " << ballVelocity.z << ")\n";
+    std::cout << "Ball acceleration: (" << ballAcc.x << ", " << ballAcc.y << ", " << ballAcc.z << ")\n";
 
     lastTime = now;
 
@@ -620,7 +624,7 @@ void StewartPlatform::ProcessInput()
         ballPosition = glm::vec3(0.0f, initHeight + ballRadius, 0.0f);
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
+        std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
         float velX = dist(gen);
         float velZ = dist(gen);
         ballVelocity = glm::vec3(velX, 0.0f, velZ);
@@ -714,7 +718,7 @@ void StewartPlatform::Start(int width, int height)
     std::random_device rd;  // Seed the random number generator
     std::mt19937 gen(rd()); // Mersenne Twister engine
 
-    std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
+    std::uniform_real_distribution<float> dist(-2.0f, 2.0f);
 
     // Generate a random float
     float velX = dist(gen);
